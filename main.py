@@ -1146,18 +1146,18 @@ class WireBabyShark(QMainWindow):
                 for idx, packet in enumerate(self.packets):
                     # Thông tin gói
                     timestamp = f"{packet.time - self.start_time:.6f}"
-                    src = packet.src if hasattr(packet, "src") else "Unknown"
-                    dst = packet.dst if hasattr(packet, "dst") else "Unknown"
+                    src_ip = packet[IP].src if packet.haslayer(IP) else (packet[Ether].src if packet.haslayer(Ether) else "Unknown")
+                    dst_ip = packet[IP].dst if packet.haslayer(IP) else (packet[Ether].dst if packet.haslayer(Ether) else "Unknown")
                     protocol = self.identify_protocol(packet)
-                    length = "43"
-                    info = "50128 → 443 [ACK] Seq=1 Ack=1514 Win=255 Len=0"
+                    length = len(packet)
+                    info = self.generate_packet_info(packet)
 
                     row_pos = self.tableWidget.rowCount()
                     self.tableWidget.insertRow(row_pos)
                     self.tableWidget.setItem(row_pos, 0, self.make_item(str(row_pos + 1)))
                     self.tableWidget.setItem(row_pos, 1, self.make_item(timestamp))
-                    self.tableWidget.setItem(row_pos, 2, self.make_item(src))
-                    self.tableWidget.setItem(row_pos, 3, self.make_item(dst))
+                    self.tableWidget.setItem(row_pos, 2, self.make_item(src_ip))
+                    self.tableWidget.setItem(row_pos, 3, self.make_item(dst_ip))
                     self.tableWidget.setItem(row_pos, 4, self.make_item(protocol))
                     self.tableWidget.setItem(row_pos, 5, self.make_item(str(length)))
                     self.tableWidget.setItem(row_pos, 6, self.make_item(info))
