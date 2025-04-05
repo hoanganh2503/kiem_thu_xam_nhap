@@ -2,7 +2,7 @@ import sys
 from PyQt6 import uic, QtGui
 from PyQt6.QtGui import QFont, QAction
 from PyQt6.QtCore import Qt, QTimer, QCoreApplication
-from PyQt6.QtWidgets import QHeaderView, QLabel, QApplication, QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QDialog, QVBoxLayout, QMenu, QInputDialog ,QWidget, QScrollArea, QTabWidget, QTableWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QTextEdit, QPushButton, QFileDialog, QMessageBox, QTableWidgetItem, QDialog, QVBoxLayout, QMenu, QInputDialog ,QWidget, QTableWidget, QHeaderView, QTabWidget
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 import threading
 import time
@@ -30,6 +30,7 @@ import webbrowser
 from PyQt6 import QtWidgets, QtGui
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QDialog, QScrollArea,QVBoxLayout, QMenu,QVBoxLayout, QLabel, QDialog
 import socket
 warnings.filterwarnings("ignore")
 
@@ -185,13 +186,14 @@ class WireBabyShark(QMainWindow):
         self.pushButton_10.clicked.connect(self.show_ip_relations)
         self.show_io_graph_button.clicked.connect(self.show_io_graphs)
         self.packets = []
+        self.packets_filter=[]
         self.sniffing = False
         self.start_time = None
         self.packet_counts = {} # Dictionary để lưu trữ số lượng gói tin theo thời gian
         self.tcp_error_counts = {} 
         
     def on_item_double_click(self, row,column):
-        packet = self.packets[row]
+        packet = self.packets_filter[row]
         ip_src, ip_dst, protocol = "Unknown", "Unknown", "Unknown"
         mac_src, mac_dst = "Unknown MAC", "Unknown MAC"
         src_port, dst_port = "N/A", "N/A"
@@ -572,10 +574,11 @@ class WireBabyShark(QMainWindow):
             return
 
         row = index.row()
-        if row >= len(self.packets):
+        print(row)
+        if row >= len(self.packets_filter):
             return
 
-        packet = self.packets[row]
+        packet = self.packets_filter[row]
 
         # Tạo menu
         menu = QMenu(self)
@@ -584,14 +587,17 @@ class WireBabyShark(QMainWindow):
         action_hexdump = QAction("📄 Hex Dump", self)
         action_full = QAction("🧬 Chi tiết đầy đủ", self)
         action_http = QAction("🧬 Xem gói tin http", self)
+        action_follow_http = QAction("📡 Follow HTTP Stream", self) 
         action_info.triggered.connect(lambda: self.show_packet_info(packet))
         action_hexdump.triggered.connect(lambda: self.show_packet_hexdump(packet))
         action_full.triggered.connect(lambda: self.show_packet_details(packet))
         action_http.triggered.connect(lambda: self.show_packet_http(packet))
+        action_follow_http.triggered.connect(lambda: self.show_http_stream(packet))
         menu.addAction(action_info)
         menu.addAction(action_hexdump)
         menu.addAction(action_full)
         menu.addAction(action_http)
+        menu.addAction(action_follow_http)
         menu.exec(self.tableWidget.viewport().mapToGlobal(position))
 
     def show_packet_info(self, packet):
@@ -645,6 +651,7 @@ class WireBabyShark(QMainWindow):
                     QMessageBox.information(self, "Không Lưu", "Không chọn đường dẫn lưu file. Dữ liệu sẽ bị xóa.")
             # Dù chọn Yes hay No, nếu tới đây là tiếp tục bắt gói → xóa dữ liệu cũ
             self.packets = []
+            self.packets_filter=[]
 
         # Nếu chưa có gì, hoặc vừa xử lý xong lưu → bắt đầu lại
         self.save_pcap = False
@@ -713,81 +720,169 @@ class WireBabyShark(QMainWindow):
         """
         Lọc gói tin dựa trên danh sách `self.packets` và bộ lọc nhập vào.
         """
-        # Lấy chuỗi bộ lọc từ ô nhập liệu
-        filter_text = self.plainTextEdit_4.toPlainText().strip()
-
-        # Xóa dữ liệu cũ trong bảng
-        self.tableWidget.setRowCount(0)
-        ctest=0
+        filter_text = self.plainTextEdit_4.toPlainText().strip()  # Lấy bộ lọc từ ô nhập liệu
+        self.tableWidget.setRowCount(0)  # Xóa dữ liệu cũ trong bảng
+        ctest = 0  # Biến đếm số gói tin phù hợp
+        self.packets_filter=[]    
+        # Xử lý các gói tin trong danh sách self.packets
         try:
             for i, packet in enumerate(self.packets):
                 try:
-                    # Kiểm tra nếu gói tin có lớp IP
-                   
+                    # Lấy thông tin gói tin: IP, thời gian, chiều dài, giao thức
                     src_ip = packet[IP].src if packet.haslayer(IP) else (packet[Ether].src if packet.haslayer(Ether) else "Unknown")
-                    dst_ip = packet[IP].dst if packet.haslayer(IP) else (packet[Ether].dst if packet.haslayer(Ether) else "Unknown")    
+                    dst_ip = packet[IP].dst if packet.haslayer(IP) else (packet[Ether].dst if packet.haslayer(Ether) else "Unknown")
                     length = len(packet)
-               
                     timestamp = packet.time
-                    
-                   
-                    protocol=self.identify_protocol(packet)
+                    protocol = self.identify_protocol(packet)
 
-                    # Kiểm tra bộ lọc
-                    if filter_text:
-                        if self.packet_matches_filter(packet, filter_text):
-                              # Bỏ qua gói tin không khớp
-                            ctest+=1
-                            row = self.tableWidget.rowCount()
-                            self.tableWidget.insertRow(row)
-                            self.tableWidget.setItem(row, 0, self.make_item(str(i + 1)))  # STT
-                            self.tableWidget.setItem(row, 1, self.make_item(str(timestamp)))  # STT
-                            self.tableWidget.setItem(row, 2, self.make_item(src_ip))  # Nguồn
-                            self.tableWidget.setItem(row, 3, self.make_item(dst_ip))  # Đích
-                            self.tableWidget.setItem(row, 4, self.make_item(protocol))  # Giao thức
-                            self.tableWidget.setItem(row, 5, self.make_item(str(length)))  # Chiều dài
-                            self.tableWidget.setItem(row, 6, self.make_item(self.generate_packet_info(packet)))
-                    else:
-                            row = self.tableWidget.rowCount()
-                            self.tableWidget.insertRow(row)
-                            self.tableWidget.setItem(row, 0, self.make_item(str(i + 1)))  # STT
-                            self.tableWidget.setItem(row, 1, self.make_item(str(timestamp)))  # STT
-                            self.tableWidget.setItem(row, 2, self.make_item(src_ip))  # Nguồn
-                            self.tableWidget.setItem(row, 3, self.make_item(dst_ip))  # Đích
-                            self.tableWidget.setItem(row, 4, self.make_item(protocol))  # Giao thức
-                            self.tableWidget.setItem(row, 5, self.make_item(str(length)))  # Chiều dài
-                            self.tableWidget.setItem(row, 6, self.make_item(self.generate_packet_info(packet))) 
-                except Exception as e:
-                    print(f"Lỗi xử lý gói tin: {e}")
-       
-        except Exception as e:
-            QMessageBox.critical(self, "Lỗi", f"Lỗi khi lọc gói tin: {str(e)}")
-        print(ctest)
+                    # Sao chép gói tin để tránh thay đổi gói gốc
+                    packet_copy = Ether(raw(packet))
+
+                    # Nếu có filter và gói tin không khớp, bỏ qua
+                    if filter_text and not self.packet_matches_filter(packet_copy, filter_text):
+                        continue
+
+                    # Nếu gói tin phù hợp với filter, thêm vào mảng packets_filter
+                    self.packets_filter.append(packet)
+                    ctest += 1
+
+                    # Thêm gói tin vào bảng
+                    row = self.tableWidget.rowCount()
+                    self.tableWidget.insertRow(row)
+                    self.tableWidget.setItem(row, 0, self.make_item(str(i + 1)))  # STT
+                    self.tableWidget.setItem(row, 1, self.make_item(str(timestamp)))  # Thời gian
+                    self.tableWidget.setItem(row, 2, self.make_item(src_ip))  # Nguồn
+                    self.tableWidget.setItem(row, 3, self.make_item(dst_ip))  # Đích
+                    self.tableWidget.setItem(row, 4, self.make_item(protocol))  # Giao thức
+                    self.tableWidget.setItem(row, 5, self.make_item(str(length)))  # Chiều dài
+                    self.tableWidget.setItem(row, 6, self.make_item(self.generate_packet_info(packet)))  # Thông tin
+
+                except Exception as e_inner:
+                    print(f"Lỗi xử lý gói tin: {e_inner}")
+
+        except Exception as e_outer:
+            QMessageBox.critical(self, "Lỗi", f"Lỗi khi lọc gói tin: {str(e_outer)}")
     def packet_matches_filter(self, packet, filter_text):
         """
         Kiểm tra xem gói tin có khớp với bộ lọc không.
-        Hỗ trợ lọc theo IP nguồn, IP đích và giao thức.
+        Hỗ trợ lọc theo IP nguồn, IP đích, giao thức, độ dài gói tin, nội dung, cờ TCP và các giao thức DNS, HTTP, ICMP.
         """
-        src_ip1 = packet[IP].src if packet.haslayer(IP) else (packet[Ether].src if packet.haslayer(Ether) else "Unknown")
-        dst_ip1 = packet[IP].dst if packet.haslayer(IP) else (packet[Ether].dst if packet.haslayer(Ether) else "Unknown")
+        src_ip = packet[IP].src if packet.haslayer(IP) else (packet[Ether].src if packet.haslayer(Ether) else "Unknown")
+        dst_ip = packet[IP].dst if packet.haslayer(IP) else (packet[Ether].dst if packet.haslayer(Ether) else "Unknown")
+        packet_length = len(packet)
+        protocol=self.identify_protocol(packet)
         try:
             if "ip.src==" in filter_text:
                 ip_src_filter = filter_text.split("ip.src==")[1].strip()
-                if src_ip1  == ip_src_filter:
+                if src_ip == ip_src_filter:
                     return True
+
             if "ip.dst==" in filter_text:
                 ip_dst_filter = filter_text.split("ip.dst==")[1].strip()
-                if dst_ip1 == ip_dst_filter:
+                if dst_ip == ip_dst_filter:
                     return True
-            if "tcp" in filter_text.lower() and  packet.haslayer(TCP):
+
+            if "tcp" in filter_text.lower() and protocol=="TCP":
                 return True
-            if "udp" in filter_text.lower() and  packet.haslayer(UDP):
+            
+            if "udp" in filter_text.lower() and protocol=="UDP":
                 return True
-    
+            
+            if "icmp" in filter_text.lower() and protocol=="ICMP":
+                return True
+            
+            if "dns" in filter_text.lower() and protocol=="DNS":
+                return True
+            
+            if "http" in filter_text.lower() and  protocol=="HTTP" :
+                if is_http_packet(packet):
+                    return True
+            
+            if "frame.len>" in filter_text:
+                length_threshold = int(filter_text.split("frame.len>")[1].strip())
+                if packet_length > length_threshold:
+                    return True
+            
+            if "frame contains" in filter_text:
+                keyword = filter_text.split("frame contains")[1].strip().strip('"')
+                if keyword.encode() in bytes(packet):
+                    return True
+            
+            
+            if "tcp.flags" in filter_text:
+                flag_type = filter_text.split("tcp.flags==")[1].strip()
+                if packet.haslayer(TCP):
+                    flags = packet[TCP].flags
+                    if flag_type.lower() == "syn" and flags & 0x02:
+                        return True
+                    if flag_type.lower() == "ack" and flags & 0x10:
+                        return True
+                    if flag_type.lower() == "fin" and flags & 0x01:
+                        return True
+                    if flag_type.lower() == "rst" and flags & 0x04:
+                        return True
+                    if flag_type.lower() == "psh" and flags & 0x08:
+                        return True
+            
         except Exception as e:
             print(f"Lỗi khi kiểm tra bộ lọc: {e}")
             return False
+        
         return False
+    def show_http_stream(self, selected_packet):
+        if not selected_packet.haslayer(TCP):
+            return
+
+        tcp_layer = selected_packet[TCP]
+        ip_layer = selected_packet[IP]
+
+        # Hàm lọc các packet thuộc cùng một stream TCP
+        def is_same_stream(pkt):
+            if not pkt.haslayer(TCP) or not pkt.haslayer(IP):
+                return False
+
+            pkt_ip = pkt[IP]
+            pkt_tcp = pkt[TCP]
+
+            return (
+                (pkt_ip.src == ip_layer.src and pkt_ip.dst == ip_layer.dst and
+                 pkt_tcp.sport == tcp_layer.sport and pkt_tcp.dport == tcp_layer.dport)
+                or
+                (pkt_ip.src == ip_layer.dst and pkt_ip.dst == ip_layer.src and
+                 pkt_tcp.sport == tcp_layer.dport and pkt_tcp.dport == tcp_layer.sport)
+            )
+
+        # Lọc tất cả các gói tin thuộc cùng stream
+        http_stream_packets = list(filter(is_same_stream, self.packets))
+
+        # Ghép nội dung stream
+        stream_data = ""
+        for pkt in http_stream_packets:
+            if pkt.haslayer(Raw):
+                try:
+                    payload = pkt[Raw].load.decode('utf-8', errors='replace')
+                    stream_data += payload + "\n"
+                except Exception:
+                    stream_data += "[Không thể decode payload]\n"
+
+        # Hiển thị cửa sổ với QTextEdit
+        dialog = QDialog(self)
+        dialog.setWindowTitle("📡 Follow HTTP Stream")
+        layout = QVBoxLayout()
+
+        text_edit = QTextEdit()
+        text_edit.setPlainText(stream_data)
+        text_edit.setReadOnly(True)
+
+        btn_close = QPushButton("Đóng")
+        btn_close.clicked.connect(dialog.close)
+
+        layout.addWidget(text_edit)
+        layout.addWidget(btn_close)
+
+        dialog.setLayout(layout)
+        dialog.resize(800, 600)
+        dialog.exec()
     def sniff_packets(self, iface):
         sniff(iface=iface, prn=self.process_packet, store=True)
 
@@ -888,7 +983,7 @@ class WireBabyShark(QMainWindow):
 
             # Lưu lại packet nếu muốn dùng sau
             self.packets.append(packet)
-
+            self.packets_filter.append(packet)
             if  protocol in ["TCP", "UDP"] : 
                 if IP in packet:
                     
@@ -955,7 +1050,8 @@ class WireBabyShark(QMainWindow):
             return "DNS"
         elif packet.haslayer(TCP):
             dport = packet[TCP].dport if packet.haslayer(TCP) else 0
-            if dport == 80 :
+            sport = packet[TCP].sport if packet.haslayer(TCP) else 0
+            if dport == 80 or  sport==80 :
                 return "HTTP"
             if dport == 21:
                 return "FTP"
@@ -1074,7 +1170,7 @@ class WireBabyShark(QMainWindow):
     def reset_sniffing(self):
         self.stop_sniffing()
         self.packets.clear()
-
+        self.packets_filter.clear()
         # Xoá bảng gói tin
         self.tableWidget.setRowCount(0)
 
@@ -1231,7 +1327,7 @@ class WireBabyShark(QMainWindow):
 
     def on_table_row_clicked(self, row, column):
         if 0 <= row < len(self.packets):
-            packet = self.packets[row]
+            packet = self.packets_filter[row]
             hex_str = hexdump(packet, dump=True)
             self.textEdit.setPlainText(hex_str)
                     
