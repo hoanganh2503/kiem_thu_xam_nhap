@@ -1,0 +1,6 @@
+PyQt6
+scapy
+matplotlib
+pandas
+psutil
+pyqt6-tools
