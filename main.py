@@ -830,7 +830,7 @@ class WireBabyShark(QMainWindow):
         
         return False
     def show_http_stream(self, selected_packet):
-        if not selected_packet.haslayer(TCP):
+        if not is_http_packet(selected_packet):
             return
 
         tcp_layer = selected_packet[TCP]
@@ -858,12 +858,8 @@ class WireBabyShark(QMainWindow):
         # Ghép nội dung stream
         stream_data = ""
         for pkt in http_stream_packets:
-            if pkt.haslayer(Raw):
-                try:
-                    payload = pkt[Raw].load.decode('utf-8', errors='replace')
-                    stream_data += payload + "\n"
-                except Exception:
-                    stream_data += "[Không thể decode payload]\n"
+            payload=parse_http_payload(pkt)
+            stream_data += payload + "\n"
 
         # Hiển thị cửa sổ với QTextEdit
         dialog = QDialog(self)
@@ -883,6 +879,7 @@ class WireBabyShark(QMainWindow):
         dialog.setLayout(layout)
         dialog.resize(800, 600)
         dialog.exec()
+ 
     def sniff_packets(self, iface):
         sniff(iface=iface, prn=self.process_packet, store=True)
 
