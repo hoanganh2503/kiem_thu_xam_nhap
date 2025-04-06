@@ -784,7 +784,8 @@ class WireBabyShark(QMainWindow):
 
             if "tcp" in filter_text.lower() and protocol=="TCP":
                 return True
-            
+            if "tls" in filter_text.lower() and protocol=="TLSv1.2":
+                return True
             if "udp" in filter_text.lower() and protocol=="UDP":
                 return True
             
@@ -1062,8 +1063,8 @@ class WireBabyShark(QMainWindow):
                 return "SSH"
             elif dport == 445:
                 return "SMB"
-            # elif dport == 443:
-            #     return "HTTPS"
+            elif dport == 443 or sport==443:
+                return "TLSv1.2"
             elif dport == 853:
                 return "DNS over TLS"
             elif dport == 4433 or dport == 784 or dport == 8443:
