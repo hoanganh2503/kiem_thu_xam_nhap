@@ -32,6 +32,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QDialog, QScrollArea,QVBoxLayout, QMenu,QVBoxLayout, QLabel, QDialog
 import socket
+from PyQt6.QtWidgets import *
 warnings.filterwarnings("ignore")
 
 def get_mac_vendor(mac_address):
@@ -73,7 +74,7 @@ def parse_http_payload(pkt):
 class InfoDialog(QDialog):
     def __init__(self, ip_src, ip_dst, protocol, mac_src, mac_dst, src_port, dst_port,  parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Thông tin chi tiết gói tin")
+        self.setWindowTitle("Thông tin tổng quan nhanh")
 
         # Tạo layout và thêm các label cho thông tin
         layout = QVBoxLayout()
@@ -293,6 +294,7 @@ class WireBabyShark(QMainWindow):
         layout.addWidget(tab_widget)
 
         protocols = {
+            "Ethernet": lambda pkt: Ether in pkt and not (IP in pkt or IPv6 in pkt),
             "IPv4": lambda pkt: IP in pkt,
             "IPv6": lambda pkt: IPv6 in pkt,
             "TCP": lambda pkt: TCP in pkt,
@@ -588,16 +590,26 @@ class WireBabyShark(QMainWindow):
         action_full = QAction("🧬 Chi tiết đầy đủ", self)
         action_http = QAction("🧬 Xem gói tin http", self)
         action_follow_http = QAction("📡 Follow HTTP Stream", self) 
+        action_follow_tcp = QAction("📡 Theo dõi luồng TCP", self)
+        action_follow_udp = QAction("📡 Theo dõi luồng UDP", self) 
         action_info.triggered.connect(lambda: self.show_packet_info(packet))
         action_hexdump.triggered.connect(lambda: self.show_packet_hexdump(packet))
         action_full.triggered.connect(lambda: self.show_packet_details(packet))
         action_http.triggered.connect(lambda: self.show_packet_http(packet))
         action_follow_http.triggered.connect(lambda: self.show_http_stream(packet))
+        action_follow_tcp.triggered.connect(self.follow_tcp_stream)
+        action_follow_udp.triggered.connect(self.follow_udp_stream)
         menu.addAction(action_info)
         menu.addAction(action_hexdump)
         menu.addAction(action_full)
         menu.addAction(action_http)
         menu.addAction(action_follow_http)
+        if packet.haslayer(TCP):
+            menu.addAction(action_follow_tcp)
+
+        # Kiểm tra nếu gói tin là UDP
+        if packet.haslayer(UDP):
+            menu.addAction(action_follow_udp)
         menu.exec(self.tableWidget.viewport().mapToGlobal(position))
 
     def show_packet_info(self, packet):
@@ -621,18 +633,20 @@ class WireBabyShark(QMainWindow):
             QMessageBox.warning(self, "Cảnh báo", "Không có gói tin để thống kê!")
             return []
         
+    from PyQt6.QtWidgets import QMessageBox, QFileDialog
+
     def start_sniffing(self):
         self.start_time = time.time()
         iface = str(self.comboBox.currentText())
         if not iface:
-            QMessageBox.critical(self, "Lỗi", "Vui lòng chọn giao diện mạng để bắt gói tin.")
+            QMessageBox.critical(self, "Error", "Please select an interface!")
             return
 
         # Nếu đã có dữ liệu trước đó → hỏi có muốn lưu hay không
         if hasattr(self, "packets") and self.packets:
             reply = QMessageBox.question(
                 self,
-                "Lưu file?",
+                "Save Capture?",
                 "Bạn có muốn lưu lại dữ liệu gói tin trước đó (PCAP)?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
@@ -829,6 +843,385 @@ class WireBabyShark(QMainWindow):
             return False
         
         return False
+    
+    def follow_tcp_stream(self): 
+        selected_row = self.tableWidget.currentRow()
+        if selected_row >= 0:
+            packet_index = int(self.tableWidget.item(selected_row, 0).text()) - 1
+
+            # Clear previous bold formatting (if any)
+            for row in range(self.tableWidget.rowCount()):
+                for column in range(self.tableWidget.columnCount()):
+                    item = self.tableWidget.item(row, column)
+                    if item:
+                        font = item.font()
+                        font.setBold(False)  # Set the font to normal
+                        item.setFont(font)
+
+            if 0 <= packet_index < len(self.packets):
+                initial_packet = self.packets[packet_index]
+                if initial_packet.haslayer(TCP) and initial_packet.haslayer(IP):
+                    tcp_layer = initial_packet[TCP]
+                    ip_layer = initial_packet[IP]
+
+                    def is_same_stream(pkt):
+                        if not pkt.haslayer(TCP) or not pkt.haslayer(IP):
+                            return False
+                        pkt_ip = pkt[IP]
+                        pkt_tcp = pkt[TCP]
+
+                        # Check two-way communication (client -> server and server -> client)
+                        return (
+                            (pkt_ip.src == ip_layer.src and pkt_ip.dst == ip_layer.dst and
+                            pkt_tcp.sport == tcp_layer.sport and pkt_tcp.dport == tcp_layer.dport)
+                            or
+                            (pkt_ip.src == ip_layer.dst and pkt_ip.dst == ip_layer.src and
+                            pkt_tcp.sport == tcp_layer.dport and pkt_tcp.dport == tcp_layer.sport)
+                        )
+
+                    # Filter packets for the same stream
+                    stream_packets = []
+                    seen_packets = set()  # Set to check duplicates
+                    
+                    for pkt in self.packets:
+                        if is_same_stream(pkt):
+                            # Create a unique identifier for the packet using tuple of relevant fields
+                            pkt_id = (pkt[IP].src, pkt[IP].dst, pkt[TCP].sport, pkt[TCP].dport, pkt.time)
+                            
+                            if pkt_id not in seen_packets:
+                                stream_packets.append(pkt)
+                                seen_packets.add(pkt_id)
+
+                    # Sort the stream packets by time and length
+                    stream_packets.sort(key=lambda p: (p.time, len(p)))
+
+                    # Store the original indices for STT (keep original sequence)
+                    original_indices = [self.packets.index(pkt) + 1 for pkt in stream_packets]
+
+                    # Update the table with the filtered stream packets
+                    self.tableWidget.setRowCount(0)  # Clear previous data before adding new
+
+                    for i, pkt in enumerate(stream_packets):
+                        try:
+                            if not pkt.haslayer(Raw):  # Skip packets without Raw data
+                                continue
+                            
+                            # Retrieve packet details
+                            src_ip = pkt[IP].src if pkt.haslayer(IP) else "Unknown"
+                            dst_ip = pkt[IP].dst if pkt.haslayer(IP) else "Unknown"
+                            length = len(pkt)
+                            timestamp = pkt.time
+                            protocol = self.identify_protocol(pkt)
+
+                            # Add the packet to the table
+                            row = self.tableWidget.rowCount()
+                            self.tableWidget.insertRow(row)
+                            self.tableWidget.setItem(row, 0, self.make_item(str(original_indices[i])))  # STT with original order
+                            self.tableWidget.setItem(row, 1, self.make_item(str(timestamp)))   # Timestamp
+                            self.tableWidget.setItem(row, 2, self.make_item(src_ip))   # Source IP
+                            self.tableWidget.setItem(row, 3, self.make_item(dst_ip))   # Destination IP
+                            self.tableWidget.setItem(row, 4, self.make_item(protocol))   # Protocol
+                            self.tableWidget.setItem(row, 5, self.make_item(str(length)))   # Length
+                            self.tableWidget.setItem(row, 6, self.make_item(self.generate_packet_info(pkt)))   # Packet info
+
+                        except Exception as e_inner:
+                            print(f"Error processing TCP stream packet: {e_inner}")
+
+                    # Create a dialog to show the stream details
+                    dialog = QDialog(self)
+                    dialog.setWindowTitle("📡 Follow TCP Stream")
+                    layout = QVBoxLayout()
+
+                    text_edit = QTextEdit()
+                    text_edit.setReadOnly(True)
+                    text_edit.setFontFamily("Courier New")
+
+                    format_combo = QComboBox()
+                    format_combo.addItems(["ASCII", "UTF-8", "Raw Bytes", "Hex Dump"])
+                    current_format = "ASCII"
+
+                    def to_hex_dump(payload):
+                        hex_string = ""
+                        ascii_string = ""
+                        line_length = 16
+                        for i, byte in enumerate(payload):
+                            hex_string += f"{byte:02x} "
+                            if 32 <= byte <= 126:
+                                ascii_string += chr(byte)
+                            else:
+                                ascii_string += "."
+                            if (i + 1) % line_length == 0:
+                                hex_string += f"  {ascii_string}\n"
+                                ascii_string = ""
+                            elif (i + 1) % 8 == 0:
+                                hex_string += " "
+                        if len(payload) % line_length != 0:
+                            padding = " " * (3 * (line_length - (len(payload) % line_length)))
+                            hex_string += padding + f"  {ascii_string}\n"
+                        return hex_string
+
+                    def to_printable_ascii(payload):
+                        ascii_string = ""
+                        for byte in payload:
+                            if 32 <= byte <= 126:
+                                ascii_string += chr(byte)
+                            else:
+                                ascii_string += "."
+                        return ascii_string
+
+                    def update_text_edit():
+                        nonlocal current_format
+                        current_format = format_combo.currentText()
+                        stream_data = ""
+                        ip_src_init = initial_packet[IP].src
+                        port_src_init = initial_packet[TCP].sport
+                        ip_dst_init = initial_packet[IP].dst
+                        port_dst_init = initial_packet[TCP].dport
+
+                        for i, pkt in enumerate(stream_packets):
+                            if pkt.haslayer(Raw):
+                                payload = pkt[Raw].load
+                                decoded_payload = ""
+                                direction = ""
+                                # Determine packet direction and assign STT (Sequence Number)
+                                if pkt[IP].src == ip_src_init and pkt[TCP].sport == port_src_init and \
+                                pkt[IP].dst == ip_dst_init and pkt[TCP].dport == port_dst_init:
+                                    direction = f"[Client -> Server] STT: {original_indices[i]}"
+                                elif pkt[IP].src == ip_dst_init and pkt[TCP].sport == port_dst_init and \
+                                    pkt[IP].dst == ip_src_init and pkt[TCP].dport == port_src_init:
+                                    direction = f"[Server -> Client] STT: {original_indices[i]}"
+                                else:
+                                    direction = f"[Unknown Direction] STT: {original_indices[i]}"
+
+                                stream_data += f"{direction}\n"
+
+                                if current_format == "ASCII":
+                                    decoded_payload = to_printable_ascii(payload)
+                                elif current_format == "UTF-8":
+                                    try:
+                                        decoded_payload = payload.decode('utf-8', errors='replace')
+                                    except UnicodeDecodeError:
+                                        decoded_payload = repr(payload)
+                                elif current_format == "Raw Bytes":
+                                    decoded_payload = repr(payload)
+                                elif current_format == "Hex Dump":
+                                    decoded_payload = to_hex_dump(payload)
+
+                                stream_data += decoded_payload + "\n"
+                                stream_data += ("-" * 60) + "\n"
+
+                        text_edit.setPlainText(stream_data)
+
+                    format_combo.currentIndexChanged.connect(update_text_edit)
+                    update_text_edit()  # Initial update
+
+                    btn_close = QPushButton("Đóng")
+                    btn_close.clicked.connect(dialog.close)
+
+                    layout.addWidget(format_combo)
+                    layout.addWidget(text_edit)
+                    layout.addWidget(btn_close)
+
+                    dialog.setLayout(layout)
+                    dialog.resize(800, 600)
+                    dialog.show()  # Show dialog
+
+                else:
+                    QMessageBox.warning(self, "Warning", "The selected packet is not a TCP/IP packet.")
+            else:
+                QMessageBox.warning(self, "Warning", "No packet is selected.")
+        else:
+            QMessageBox.warning(self, "Warning", "No row selected in the table.")
+
+    def follow_udp_stream(self):
+        selected_row = self.tableWidget.currentRow()
+        if selected_row >= 0:
+            packet_index = int(self.tableWidget.item(selected_row, 0).text()) - 1
+
+            # Clear previous bold formatting (if any)
+            for row in range(self.tableWidget.rowCount()):
+                for column in range(self.tableWidget.columnCount()):
+                    item = self.tableWidget.item(row, column)
+                    if item:
+                        font = item.font()
+                        font.setBold(False)  # Set the font to normal
+                        item.setFont(font)
+
+            if 0 <= packet_index < len(self.packets):
+                initial_packet = self.packets[packet_index]
+                if initial_packet.haslayer(UDP) and initial_packet.haslayer(IP):
+                    udp_layer = initial_packet[UDP]
+                    ip_layer = initial_packet[IP]
+
+                    def is_same_stream(pkt):
+                        if not pkt.haslayer(UDP) or not pkt.haslayer(IP):
+                            return False
+                        pkt_ip = pkt[IP]
+                        pkt_udp = pkt[UDP]
+
+                        # Check if the source and destination IP and ports match the initial packet
+                        return (
+                            (pkt_ip.src == ip_layer.src and pkt_ip.dst == ip_layer.dst and
+                             pkt_udp.sport == udp_layer.sport and pkt_udp.dport == udp_layer.dport)
+                            or
+                            (pkt_ip.src == ip_layer.dst and pkt_ip.dst == ip_layer.src and
+                             pkt_udp.sport == udp_layer.dport and pkt_udp.dport == udp_layer.sport)
+                        )
+
+                    # Filter packets for the same stream
+                    stream_packets = []
+                    seen_packets = set()  # Set to check duplicates
+
+                    for pkt in self.packets:
+                        if is_same_stream(pkt):
+                            # Create a unique identifier for the packet using tuple of relevant fields
+                            pkt_id = (pkt[IP].src, pkt[IP].dst, pkt[UDP].sport, pkt[UDP].dport, pkt.time)
+
+                            if pkt_id not in seen_packets:
+                                stream_packets.append(pkt)
+                                seen_packets.add(pkt_id)
+
+                    # Sort the stream packets by time
+                    stream_packets.sort(key=lambda p: p.time)
+
+                    # Store the original indices for STT (keep original sequence)
+                    original_indices = [self.packets.index(pkt) + 1 for pkt in stream_packets]
+
+                    # Update the table with the filtered stream packets
+                    self.tableWidget.setRowCount(0)  # Clear previous data before adding new
+
+                    for i, pkt in enumerate(stream_packets):
+                        try:
+                            if not pkt.haslayer(Raw):  # Skip packets without Raw data
+                                continue
+
+                            # Retrieve packet details
+                            src_ip = pkt[IP].src if pkt.haslayer(IP) else "Unknown"
+                            dst_ip = pkt[IP].dst if pkt.haslayer(IP) else "Unknown"
+                            length = len(pkt)
+                            timestamp = pkt.time
+                            protocol = self.identify_protocol(pkt)
+
+                            # Add the packet to the table
+                            row = self.tableWidget.rowCount()
+                            self.tableWidget.insertRow(row)
+                            self.tableWidget.setItem(row, 0, self.make_item(str(original_indices[i])))  # STT with original order
+                            self.tableWidget.setItem(row, 1, self.make_item(str(timestamp)))  # Timestamp
+                            self.tableWidget.setItem(row, 2, self.make_item(src_ip))  # Source IP
+                            self.tableWidget.setItem(row, 3, self.make_item(dst_ip))  # Destination IP
+                            self.tableWidget.setItem(row, 4, self.make_item(protocol))  # Protocol
+                            self.tableWidget.setItem(row, 5, self.make_item(str(length)))  # Length
+                            self.tableWidget.setItem(row, 6, self.make_item(self.generate_packet_info(pkt)))  # Packet info
+
+                        except Exception as e_inner:
+                            print(f"Error processing UDP stream packet: {e_inner}")
+
+                    # Create a dialog to show the stream details
+                    dialog = QDialog(self)
+                    dialog.setWindowTitle("📡 Follow UDP Stream")
+                    layout = QVBoxLayout()
+
+                    text_edit = QTextEdit()
+                    text_edit.setReadOnly(True)
+                    text_edit.setFontFamily("Courier New")
+
+                    format_combo = QComboBox()
+                    format_combo.addItems(["ASCII", "UTF-8", "Raw Bytes", "Hex Dump"])
+                    current_format = "ASCII"
+
+                    def to_hex_dump(payload):
+                        hex_string = ""
+                        ascii_string = ""
+                        line_length = 16
+                        for i, byte in enumerate(payload):
+                            hex_string += f"{byte:02x} "
+                            if 32 <= byte <= 126:
+                                ascii_string += chr(byte)
+                            else:
+                                ascii_string += "."
+                            if (i + 1) % line_length == 0:
+                                hex_string += f"  {ascii_string}\n"
+                                ascii_string = ""
+                            elif (i + 1) % 8 == 0:
+                                hex_string += " "
+                        if len(payload) % line_length != 0:
+                            padding = " " * (3 * (line_length - (len(payload) % line_length)))
+                            hex_string += padding + f"  {ascii_string}\n"
+                        return hex_string
+
+                    def to_printable_ascii(payload):
+                        ascii_string = ""
+                        for byte in payload:
+                            if 32 <= byte <= 126:
+                                ascii_string += chr(byte)
+                            else:
+                                ascii_string += "."
+                        return ascii_string
+
+                    def update_text_edit():
+                        nonlocal current_format
+                        current_format = format_combo.currentText()
+                        stream_data = ""
+                        ip_src_init = initial_packet[IP].src
+                        port_src_init = initial_packet[UDP].sport
+                        ip_dst_init = initial_packet[IP].dst
+                        port_dst_init = initial_packet[UDP].dport
+
+                        for i, pkt in enumerate(stream_packets):
+                            if pkt.haslayer(Raw):
+                                payload = pkt[Raw].load
+                                decoded_payload = ""
+                                direction = ""
+                                # Determine packet direction and assign STT (Sequence Number)
+                                if pkt[IP].src == ip_src_init and pkt[UDP].sport == port_src_init and \
+                                   pkt[IP].dst == ip_dst_init and pkt[UDP].dport == port_dst_init:
+                                    direction = f"[Source -> Destination] STT: {original_indices[i]}"
+                                elif pkt[IP].src == ip_dst_init and pkt[UDP].sport == port_dst_init and \
+                                     pkt[IP].dst == ip_src_init and pkt[UDP].dport == port_src_init:
+                                    direction = f"[Destination -> Source] STT: {original_indices[i]}"
+                                else:
+                                    direction = f"[Unknown Direction] STT: {original_indices[i]}"
+
+                                stream_data += f"{direction}\n"
+
+                                if current_format == "ASCII":
+                                    decoded_payload = to_printable_ascii(payload)
+                                elif current_format == "UTF-8":
+                                    try:
+                                        decoded_payload = payload.decode('utf-8', errors='replace')
+                                    except UnicodeDecodeError:
+                                        decoded_payload = repr(payload)
+                                elif current_format == "Raw Bytes":
+                                    decoded_payload = repr(payload)
+                                elif current_format == "Hex Dump":
+                                    decoded_payload = to_hex_dump(payload)
+
+                                stream_data += decoded_payload + "\n"
+                                stream_data += ("-" * 60) + "\n"
+
+                        text_edit.setPlainText(stream_data)
+
+                    format_combo.currentIndexChanged.connect(update_text_edit)
+                    update_text_edit()  # Initial update
+
+                    btn_close = QPushButton("Đóng")
+                    btn_close.clicked.connect(dialog.close)
+
+                    layout.addWidget(format_combo)
+                    layout.addWidget(text_edit)
+                    layout.addWidget(btn_close)
+
+                    dialog.setLayout(layout)
+                    dialog.resize(800, 600)
+                    dialog.show()  # Show dialog
+
+                else:
+                    QMessageBox.warning(self, "Warning", "The selected packet is not a UDP/IP packet.")
+            else:
+                QMessageBox.warning(self, "Warning", "No packet is selected.")
+        else:
+            QMessageBox.warning(self, "Warning", "No row selected in the table.")
+            
     def show_http_stream(self, selected_packet):
         if not is_http_packet(selected_packet):
             return
@@ -981,7 +1374,7 @@ class WireBabyShark(QMainWindow):
             # Lưu lại packet nếu muốn dùng sau
             self.packets.append(packet)
             self.packets_filter.append(packet)
-            if  protocol in ["TCP", "UDP"] : 
+            if  protocol in ["TCP", "UDP" , "ICMP"] : 
                 if IP in packet:
                     
                         proto = packet[IP].proto
@@ -1024,8 +1417,13 @@ class WireBabyShark(QMainWindow):
                             printed_something = True
                             print("Tấn công!")
                             print("Loại bất thường:", self.AI.predict_attack(data))
-                            msg = f"Bản ghi {row_pos+1} xuất hiện bất thường!\nLoại bất thường: {self.AI.predict_attack(data)}"
-                            with open("log_tan_cong.txt", "a", encoding="utf-8") as f:
+                            msg = (f"Bản ghi {row_pos+1} xuất hiện bất thường\n"
+                            f"PROTO: {protocol_label}, IPSRC: {src_ip} : SPORT: {src_port}, "
+                            f"IPDST: {dst_ip} : DPORT: {dst_port}, STATE: {state}, STTL: {sttl}, "
+                            f"DLOAD: {dload}, SWIN: {swin}, DWIN: {dwin}, STATE_INT: {state_INT}, "
+                            f"STATE_CON: {state_CON}, STATE_FIN: {state_FIN}\n"
+                            f"Loại bất thường: {self.AI.predict_attack(data)}")
+                            with open("LogBatThuong.txt", "a", encoding="utf-8") as f:
                                 f.write(msg + "\n")
                             for col in range(self.tableWidget.columnCount()):
                                 self.tableWidget.item(row_pos, col).setBackground(QtGui.QColor("red"))
@@ -1122,9 +1520,9 @@ class WireBabyShark(QMainWindow):
         if file_path:
             try:
                 wrpcap(file_path, self.packets)
-                QMessageBox.information(self, "Đã lưu", "Lưu gói tin thành công!")
+                QMessageBox.information(self, "Save", "Packets saved successfully!")
             except Exception as e:
-                QMessageBox.critical(self, "Lỗi", f"Lỗi khi lưu file:\n{e}")
+                QMessageBox.critical(self, "Error", f"Failed to save file:\n{e}")
 
     def load_pcap(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1142,10 +1540,10 @@ class WireBabyShark(QMainWindow):
                 self.filter_packets()
                 self.start_time = self.packets_filter[0].time if self.packets_filter else time.time()
 
-                QMessageBox.information(self, "Thành công", "Tải lên gói tin thành công!")
+                QMessageBox.information(self, "Load", "Packets loaded successfully!")
 
             except Exception as e:
-                QMessageBox.critical(self, "Lỗi", f"Lỗi khi mở file:\n{e}")
+                QMessageBox.critical(self, "Error", f"Failed to load file:\n{e}")
 
     def reset_sniffing(self):
         self.stop_sniffing()
@@ -1192,85 +1590,125 @@ class WireBabyShark(QMainWindow):
         stats_window.exec()
 
     def show_destination_stats(self):
+    # Kiểm tra nếu không có gói tin
         if not self.packets:
             QMessageBox.warning(self, "Cảnh báo", "Không có gói tin để thống kê!")
             return
 
-        # Tạo DataFrame từ các gói IP
+        # Lọc các gói tin có lớp IP và lấy địa chỉ đích
+        destination_ips = [p[IP].dst for p in self.packets if p.haslayer(IP)]
+        
+        if not destination_ips:
+            QMessageBox.information(self, "Thông báo", "Không có gói tin có lớp IP.")
+            return
+
+        # Tạo DataFrame từ danh sách địa chỉ đích
         df = pd.DataFrame({
-            "Destination": [p[IP].dst for p in self.packets if p.haslayer(IP)]
+            "Destination": destination_ips
         })
 
-        # Đếm tần suất
+        # Đếm tần suất địa chỉ đích
         destination_frequency = df["Destination"].value_counts()
+
+        # Lọc địa chỉ có tần suất >= 10
         destination_frequency = destination_frequency[destination_frequency >= 10]
 
+        # Kiểm tra nếu không có địa chỉ đích nào thỏa mãn
         if destination_frequency.empty:
             QMessageBox.information(self, "Thông báo", "Không có địa chỉ đích nào có tần suất trên 10!")
             return
 
-        # Tạo cửa sổ thống kê
+        # Tạo cửa sổ hiển thị thống kê
         stats_window = QDialog(self)
         stats_window.setWindowTitle("Thống kê Địa chỉ Đích")
         stats_window.resize(800, 500)
 
         layout = QVBoxLayout(stats_window)
 
-        # Tạo biểu đồ
+        # Tạo biểu đồ với các tùy chỉnh tốt hơn
         fig, ax = plt.subplots(figsize=(10, 5))
         destination_frequency.plot(kind="bar", color="skyblue", ax=ax)
-        ax.set_xlabel("Địa chỉ đích")
-        ax.set_ylabel("Tần suất")
-        ax.set_title("Tần suất các địa chỉ đích xuất hiện")
-        ax.tick_params(axis='x', rotation=45)
 
-        # Thêm vào PyQt canvas
+        ax.set_xlabel("Địa chỉ đích", fontsize=12)
+        ax.set_ylabel("Tần suất", fontsize=12)
+        ax.set_title("Tần suất các địa chỉ đích xuất hiện", fontsize=14)
+        
+        # Thay đổi hướng nhãn trục X để chúng hiển thị theo chiều ngang
+        ax.tick_params(axis='x', rotation=0, labelsize=10)  # rotation=0 để hiển thị ngang
+        ax.grid(True, axis='y', linestyle='--', alpha=0.7)
+
+        # Thêm chú thích cho mỗi cột trên biểu đồ
+        for i, v in enumerate(destination_frequency):
+            ax.text(i, v + 0.5, str(v), ha='center', va='bottom', fontsize=10)
+
+        # Thêm vào canvas PyQt
         canvas = FigureCanvas(fig)
         layout.addWidget(canvas)
         canvas.draw()
 
+        # Hiển thị cửa sổ thống kê
         stats_window.exec()
 
     def show_source_stats(self):
+    # Kiểm tra nếu không có gói tin
         if not self.packets:
             QMessageBox.warning(self, "Cảnh báo", "Không có gói tin để thống kê!")
             return
 
-        # Lọc IP có lớp IP
+        # Lọc các gói tin có lớp IP và lấy địa chỉ nguồn
+        source_ips = [p[IP].src for p in self.packets if p.haslayer(IP)]
+        
+        if not source_ips:
+            QMessageBox.information(self, "Thông báo", "Không có gói tin có lớp IP.")
+            return
+
+        # Tạo DataFrame từ danh sách địa chỉ nguồn
         df = pd.DataFrame({
-            "Source": [p[IP].src for p in self.packets if p.haslayer(IP)]
+            "Source": source_ips
         })
 
-        # Thống kê tần suất
-        frequency = df["Source"].value_counts()
-        frequency = frequency[frequency >= 20]  # 👈 Chỉnh điều kiện tùy yêu cầu
+        # Thống kê tần suất địa chỉ nguồn
+        source_frequency = df["Source"].value_counts()
 
-        if frequency.empty:
+        # Lọc địa chỉ có tần suất >= 20
+        source_frequency = source_frequency[source_frequency >= 20]
+
+        # Kiểm tra nếu không có địa chỉ nguồn nào thỏa mãn
+        if source_frequency.empty:
             QMessageBox.information(self, "Thông báo", "Không có địa chỉ nguồn nào có tần suất trên 20!")
             return
 
-        # Tạo cửa sổ thống kê
+        # Tạo cửa sổ hiển thị thống kê
         stats_window = QDialog(self)
         stats_window.setWindowTitle("Thống kê Địa chỉ Nguồn")
         stats_window.resize(800, 500)
 
         layout = QVBoxLayout(stats_window)
 
-        # Tạo biểu đồ
+        # Tạo biểu đồ với các tùy chỉnh tốt hơn
         fig, ax = plt.subplots(figsize=(10, 5))
-        frequency.plot(kind="bar", color="lightcoral", ax=ax)
-        ax.set_xlabel("Địa chỉ nguồn")
-        ax.set_ylabel("Tần suất")
-        ax.set_title("Tần suất các địa chỉ nguồn xuất hiện")
-        ax.tick_params(axis='x', rotation=45)
+        source_frequency.plot(kind="bar", color="lightcoral", ax=ax)
 
-        # Thêm canvas vào PyQt
+        ax.set_xlabel("Địa chỉ nguồn", fontsize=12)
+        ax.set_ylabel("Tần suất", fontsize=12)
+        ax.set_title("Tần suất các địa chỉ nguồn xuất hiện", fontsize=14)
+        
+        # Thay đổi hướng nhãn trục X để chúng hiển thị theo chiều ngang
+        ax.tick_params(axis='x', rotation=0, labelsize=10)  # rotation=0 để hiển thị ngang
+        ax.grid(True, axis='y', linestyle='--', alpha=0.7)
+
+        # Thêm chú thích cho mỗi cột trên biểu đồ
+        for i, v in enumerate(source_frequency):
+            ax.text(i, v + 0.5, str(v), ha='center', va='bottom', fontsize=10)
+
+        # Thêm vào canvas PyQt
         canvas = FigureCanvas(fig)
         layout.addWidget(canvas)
         canvas.draw()
 
+        # Hiển thị cửa sổ thống kê
         stats_window.exec()
-
+    
     def show_protocol_stats(self):
         if not self.packets:
             QMessageBox.warning(self, "Cảnh báo", "Không có gói tin để thống kê!")
