@@ -294,7 +294,6 @@ class WireBabyShark(QMainWindow):
         layout.addWidget(tab_widget)
 
         protocols = {
-            "Ethernet": lambda pkt: Ether in pkt and not (IP in pkt or IPv6 in pkt),
             "IPv4": lambda pkt: IP in pkt,
             "IPv6": lambda pkt: IPv6 in pkt,
             "TCP": lambda pkt: TCP in pkt,
