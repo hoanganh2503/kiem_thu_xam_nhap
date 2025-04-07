@@ -724,6 +724,11 @@ class WireBabyShark(QMainWindow):
         elif packet.haslayer(ICMP):
             icmp = packet[ICMP]
             return f"ICMP Type={icmp.type} Code={icmp.code}"
+        
+        elif packet.haslayer(IPv6):
+            ipv6 = packet[IPv6]
+            return f"IPv6 Source={ipv6.src} Destination={ipv6.dst}"
+        
         elif packet.haslayer(ARP):
             arp = packet[ARP]
             if arp.op == 1:
@@ -1344,6 +1349,9 @@ class WireBabyShark(QMainWindow):
             if packet.haslayer(IP):
                 src = packet[IP].src
                 dst = packet[IP].dst
+            elif packet.haslayer(IPv6):  # Kiểm tra nếu là IPv6
+                src = packet[IPv6].src
+                dst = packet[IPv6].dst
             elif packet.haslayer(Ether):
                 src = packet[Ether].src
                 dst = packet[Ether].dst
