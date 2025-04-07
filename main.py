@@ -293,7 +293,6 @@ class WireBabyShark(QMainWindow):
         layout.addWidget(tab_widget)
 
         protocols = {
-            "Ethernet": lambda pkt: Ether in pkt and not (IP in pkt or IPv6 in pkt),
             "IPv4": lambda pkt: IP in pkt,
             "IPv6": lambda pkt: IPv6 in pkt,
             "TCP": lambda pkt: TCP in pkt,
@@ -622,20 +621,18 @@ class WireBabyShark(QMainWindow):
             QMessageBox.warning(self, "Cảnh báo", "Không có gói tin để thống kê!")
             return []
         
-    from PyQt6.QtWidgets import QMessageBox, QFileDialog
-
     def start_sniffing(self):
         self.start_time = time.time()
         iface = str(self.comboBox.currentText())
         if not iface:
-            QMessageBox.critical(self, "Error", "Please select an interface!")
+            QMessageBox.critical(self, "Lỗi", "Vui lòng chọn giao diện mạng để bắt gói tin.")
             return
 
         # Nếu đã có dữ liệu trước đó → hỏi có muốn lưu hay không
         if hasattr(self, "packets") and self.packets:
             reply = QMessageBox.question(
                 self,
-                "Save Capture?",
+                "Lưu file?",
                 "Bạn có muốn lưu lại dữ liệu gói tin trước đó (PCAP)?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
@@ -1125,9 +1122,9 @@ class WireBabyShark(QMainWindow):
         if file_path:
             try:
                 wrpcap(file_path, self.packets)
-                QMessageBox.information(self, "Save", "Packets saved successfully!")
+                QMessageBox.information(self, "Đã lưu", "Lưu gói tin thành công!")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save file:\n{e}")
+                QMessageBox.critical(self, "Lỗi", f"Lỗi khi lưu file:\n{e}")
 
     def load_pcap(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1145,10 +1142,10 @@ class WireBabyShark(QMainWindow):
                 self.filter_packets()
                 self.start_time = self.packets_filter[0].time if self.packets_filter else time.time()
 
-                QMessageBox.information(self, "Load", "Packets loaded successfully!")
+                QMessageBox.information(self, "Thành công", "Tải lên gói tin thành công!")
 
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load file:\n{e}")
+                QMessageBox.critical(self, "Lỗi", f"Lỗi khi mở file:\n{e}")
 
     def reset_sniffing(self):
         self.stop_sniffing()
