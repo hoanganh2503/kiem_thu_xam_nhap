@@ -193,34 +193,35 @@ class WireBabyShark(QMainWindow):
         self.tcp_error_counts = {} 
         
     def on_item_double_click(self, row,column):
-        packet = self.packets_filter[row]
-        ip_src, ip_dst, protocol = "Unknown", "Unknown", "Unknown"
-        mac_src, mac_dst = "Unknown MAC", "Unknown MAC"
-        src_port, dst_port = "N/A", "N/A"
+        if 0 <= row < len(self.packets_filter):
+            packet = self.packets_filter[row]
+            ip_src, ip_dst, protocol = "Unknown", "Unknown", "Unknown"
+            mac_src, mac_dst = "Unknown MAC", "Unknown MAC"
+            src_port, dst_port = "N/A", "N/A"
     
     # Kiểm tra nếu gói tin có lớp Ethernet để lấy địa chỉ MAC
-        if Ether in packet:
-            mac_src = packet[Ether].src
-            mac_dst = packet[Ether].dst
+            if Ether in packet:
+                mac_src = packet[Ether].src
+                mac_dst = packet[Ether].dst
 
     # Kiểm tra nếu gói tin có lớp IP để lấy thông tin IP và giao thức
-        if IP in packet:
-            ip_src = packet[IP].src
-            ip_dst = packet[IP].dst
+            if IP in packet:
+                ip_src = packet[IP].src
+                ip_dst = packet[IP].dst
             
 
     # Kiểm tra nếu gói tin là TCP hoặc UDP để lấy cổng
-        if TCP in packet:
-            src_port = packet[TCP].sport
-            dst_port = packet[TCP].dport
+            if TCP in packet:
+                src_port = packet[TCP].sport
+                dst_port = packet[TCP].dport
           
-        elif UDP in packet:
-            src_port = packet[UDP].sport
-            dst_port = packet[UDP].dport
+            elif UDP in packet:
+                src_port = packet[UDP].sport
+                dst_port = packet[UDP].dport
         
-        protocol=self.identify_protocol(packet)
-        info_dialog = InfoDialog(ip_src, ip_dst, protocol, mac_src, mac_dst, src_port, dst_port)
-        info_dialog.exec()
+            protocol=self.identify_protocol(packet)
+            info_dialog = InfoDialog(ip_src, ip_dst, protocol, mac_src, mac_dst, src_port, dst_port)
+            info_dialog.exec()
     
         
     def show_endpoint_stats(self, stats_type="ethernet"):
@@ -724,6 +725,7 @@ class WireBabyShark(QMainWindow):
         self.tableWidget.setRowCount(0)  # Xóa dữ liệu cũ trong bảng
         ctest = 0  # Biến đếm số gói tin phù hợp
         self.packets_filter=[]    
+
         # Xử lý các gói tin trong danh sách self.packets
         try:
             for i, packet in enumerate(self.packets):
@@ -1049,7 +1051,7 @@ class WireBabyShark(QMainWindow):
         elif packet.haslayer(TCP):
             dport = packet[TCP].dport if packet.haslayer(TCP) else 0
             sport = packet[TCP].sport if packet.haslayer(TCP) else 0
-            if dport == 80 or  sport==80 :
+            if is_http_packet(packet) :
                 return "HTTP"
             if dport == 21:
                 return "FTP"
@@ -1137,28 +1139,11 @@ class WireBabyShark(QMainWindow):
         if file_path:
             try:
                 self.packets = rdpcap(file_path)
-                self.tableWidget.setRowCount(0)  # Xoá hết dữ liệu cũ
-
-                self.start_time = self.packets[0].time if self.packets else time.time()
-
-                for idx, packet in enumerate(self.packets):
-                    # Thông tin gói
-                    timestamp = f"{packet.time - self.start_time:.6f}"
-                    src_ip = packet[IP].src if packet.haslayer(IP) else (packet[Ether].src if packet.haslayer(Ether) else "Unknown")
-                    dst_ip = packet[IP].dst if packet.haslayer(IP) else (packet[Ether].dst if packet.haslayer(Ether) else "Unknown")
-                    protocol = self.identify_protocol(packet)
-                    length = len(packet)
-                    info = self.generate_packet_info(packet)
-
-                    row_pos = self.tableWidget.rowCount()
-                    self.tableWidget.insertRow(row_pos)
-                    self.tableWidget.setItem(row_pos, 0, self.make_item(str(row_pos + 1)))
-                    self.tableWidget.setItem(row_pos, 1, self.make_item(timestamp))
-                    self.tableWidget.setItem(row_pos, 2, self.make_item(src_ip))
-                    self.tableWidget.setItem(row_pos, 3, self.make_item(dst_ip))
-                    self.tableWidget.setItem(row_pos, 4, self.make_item(protocol))
-                    self.tableWidget.setItem(row_pos, 5, self.make_item(str(length)))
-                    self.tableWidget.setItem(row_pos, 6, self.make_item(info))
+                self.packets_filter=rdpcap(file_path)
+              
+                # self.tableWidget.setRowCount(0)  # Xoá hết dữ liệu cũ
+                self.filter_packets()
+                self.start_time = self.packets_filter[0].time if self.packets_filter else time.time()
 
                 QMessageBox.information(self, "Load", "Packets loaded successfully!")
 
@@ -1324,7 +1309,7 @@ class WireBabyShark(QMainWindow):
         stats_window.exec()
 
     def on_table_row_clicked(self, row, column):
-        if 0 <= row < len(self.packets):
+        if 0 <= row < len(self.packets_filter):
             packet = self.packets_filter[row]
             hex_str = hexdump(packet, dump=True)
             self.textEdit.setPlainText(hex_str)
