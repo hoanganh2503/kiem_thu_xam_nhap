@@ -724,7 +724,14 @@ class WireBabyShark(QMainWindow):
         elif packet.haslayer(ICMP):
             icmp = packet[ICMP]
             return f"ICMP Type={icmp.type} Code={icmp.code}"
-
+        elif packet.haslayer(ARP):
+            arp = packet[ARP]
+            if arp.op == 1:
+                return f"ARP Request: Who has {arp.pdst}? Tell {arp.psrc}"
+            elif arp.op == 2:
+                return f"ARP Reply: {arp.psrc} is at {arp.hwsrc}"
+            else:
+                return f"ARP op={arp.op}"
         else:
             return "Unknown or unsupported protocol"
     def filter_packets(self):
@@ -1334,9 +1341,15 @@ class WireBabyShark(QMainWindow):
                 hex_str = hexdump(packet, dump=True)
                 QTimer.singleShot(0, lambda: self.textEdit.setPlainText(hex_str))
 
+            if packet.haslayer(IP):
+                src = packet[IP].src
+                dst = packet[IP].dst
+            elif packet.haslayer(Ether):
+                src = packet[Ether].src
+                dst = packet[Ether].dst
+            else:
+                src = dst = "Unknown"
 
-            src = packet[IP].src if packet.haslayer(IP) else "Unknown"
-            dst = packet[IP].dst if packet.haslayer(IP) else "Unknown"
             timestamp = time.strftime('%H:%M:%S')
             timestamp = f"{packet.time - self.start_time:.6f}"
             info = self.generate_packet_info(packet)
